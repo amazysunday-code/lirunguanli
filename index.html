@@ -377,23 +377,51 @@ function fmtUSDv(n){ return 'USD ' + (parseFloat(n)||0).toLocaleString('en-US',{
 /* ═══════════════════════════════
    SAVE / LOAD / RESET
 ═══════════════════════════════ */
-function saveDB(){
-  try{ localStorage.setItem('profitStatsDB', JSON.stringify(DB)); toast('已保存到本地浏览器','ok'); }
-  catch(e){ toast('保存失败: '+e.message,'err'); }
+async function saveDB(){
+  // 先写本地缓存，保证即使网络/KV异常也不丢数据
+  try{ localStorage.setItem('profitStatsDB', JSON.stringify(DB)); }
+  catch(e){ console.warn('本地缓存失败',e); }
+
+  try{
+    const res = await fetch('/api/db', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(DB)
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    toast('已保存到云端（KV），可跨设备同步','ok');
+  }catch(e){
+    toast('云端保存失败（已保存到本地浏览器）：'+e.message,'err');
+  }
 }
-function loadDB(){
+async function loadDB(){
+  // 先用本地缓存兜底，避免接口未配置/离线时白屏
   try{
     const raw = localStorage.getItem('profitStatsDB');
     if(raw){ DB = JSON.parse(raw); }
-    if(!DB.settings) DB.settings = JSON.parse(JSON.stringify(DEFAULT_DB.settings));
-    if(!DB.records) DB.records = [];
-    if(!DB.notes) DB.notes = [];
-  }catch(e){ console.warn('加载失败',e); }
+  }catch(e){ console.warn('本地加载失败',e); }
+
+  // 再尝试从云端 KV 拉取最新数据（多设备同步的关键）
+  try{
+    const res = await fetch('/api/db');
+    if(res.ok){
+      const cloud = await res.json();
+      if(cloud){
+        DB = cloud;
+        try{ localStorage.setItem('profitStatsDB', JSON.stringify(DB)); }catch(e){}
+      }
+    }
+  }catch(e){ console.warn('云端加载失败，使用本地缓存',e); }
+
+  if(!DB.settings) DB.settings = JSON.parse(JSON.stringify(DEFAULT_DB.settings));
+  if(!DB.records) DB.records = [];
+  if(!DB.notes) DB.notes = [];
 }
-function resetDB(){
+async function resetDB(){
   if(!confirm('确定重置所有数据？这将清空全部流水记录，此操作不可撤销。')) return;
   DB = JSON.parse(JSON.stringify(DEFAULT_DB));
   localStorage.removeItem('profitStatsDB');
+  try{ await fetch('/api/db', {method:'DELETE'}); }catch(e){ console.warn('清空云端数据失败',e); }
   renderAll();
   toast('已重置为默认数据','info');
 }
@@ -905,8 +933,8 @@ function generateProfitPDF(){
 /* ═══════════════════════════════
    INIT
 ═══════════════════════════════ */
-document.addEventListener('DOMContentLoaded', ()=>{
-  loadDB();
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await loadDB();
   renderAll();
 });
 </script>
