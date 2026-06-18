@@ -292,6 +292,54 @@ label{font-size:10px;color:var(--text-dim);font-weight:500;letter-spacing:.05em;
     </div>
   </div>
 
+  <!-- 历史归档汇总 -->
+  <div class="panel">
+    <div class="panel-title">历史归档汇总 <span class="panel-sub">— 点击「归档本期」把当前合计存入历史，跨期自动累计</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <button class="btn btn-outline btn-sm" onclick="archivePeriod()">📦 归档本期</button>
+      <span style="font-size:11px;color:var(--text-dim)">归档不会自动清空当前流水，归档后会询问你是否要开始下一期。</span>
+    </div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:140px">归档时间</th>
+            <th style="min-width:140px">统计期间</th>
+            <th class="center" style="width:60px">笔数</th>
+            <th class="right" style="width:100px">总收款<br>(USD)</th>
+            <th class="right" style="width:100px">折人民币<br>(CNY)</th>
+            <th class="right" style="width:100px">总利润<br>(CNY)</th>
+            <th class="right" style="width:110px">我的利润<br>(CNY)</th>
+            <th style="width:30px"></th>
+          </tr>
+        </thead>
+        <tbody id="histTbody"></tbody>
+      </table>
+    </div>
+    <div class="stat-grid">
+      <div class="summary-box">
+        <label>已归档期数</label>
+        <div class="val" id="histCount">0</div>
+      </div>
+      <div class="summary-box">
+        <label>累计总收款 (USD)</label>
+        <div class="val" id="histUSD">USD 0.00</div>
+      </div>
+      <div class="summary-box">
+        <label>累计折人民币 (CNY)</label>
+        <div class="val" id="histCNY">¥0.00</div>
+      </div>
+      <div class="summary-box">
+        <label>累计总利润 (CNY)</label>
+        <div class="val" id="histTP">¥0.00</div>
+      </div>
+      <div class="summary-box highlight">
+        <label>累计我的利润 (CNY)</label>
+        <div class="val" id="histMP">¥0.00</div>
+      </div>
+    </div>
+  </div>
+
   <!-- 报表设置 -->
   <div class="panel">
     <div class="panel-title">报表设置</div>
@@ -340,7 +388,8 @@ const DEFAULT_DB = {
     periodStart:'', periodEnd:''
   },
   records:[],
-  notes:['人民币折算金额按打款当日实时汇率计算，最终以银行实际结汇金额为准。']
+  notes:['人民币折算金额按打款当日实时汇率计算，最终以银行实际结汇金额为准。'],
+  history:[]
 };
 
 let DB = JSON.parse(JSON.stringify(DEFAULT_DB));
@@ -416,14 +465,23 @@ async function loadDB(){
   if(!DB.settings) DB.settings = JSON.parse(JSON.stringify(DEFAULT_DB.settings));
   if(!DB.records) DB.records = [];
   if(!DB.notes) DB.notes = [];
+  if(!DB.history) DB.history = [];
 }
 async function resetDB(){
-  if(!confirm('确定重置所有数据？这将清空全部流水记录，此操作不可撤销。')) return;
+  if(!confirm('确定重置当前流水记录？这将清空当前这一期的明细，历史归档记录不会被清空。此操作不可撤销。')) return;
+  const keepHistory = DB.history || [];
   DB = JSON.parse(JSON.stringify(DEFAULT_DB));
-  localStorage.removeItem('profitStatsDB');
-  try{ await fetch('/api/db', {method:'DELETE'}); }catch(e){ console.warn('清空云端数据失败',e); }
+  DB.history = keepHistory;
+  try{ localStorage.setItem('profitStatsDB', JSON.stringify(DB)); }catch(e){}
+  try{
+    await fetch('/api/db', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(DB)
+    });
+  }catch(e){ console.warn('云端同步失败',e); }
   renderAll();
-  toast('已重置为默认数据','info');
+  toast('已重置当前流水记录（历史归档已保留）','info');
 }
 
 /* ═══════════════════════════════
@@ -441,6 +499,7 @@ function renderAll(){
   renderRateMeta();
   renderNotes();
   renderRecords();
+  renderHistory();
 }
 
 /* ═══════════════════════════════
@@ -625,6 +684,76 @@ function renderTotals(){
   setText('statMP', fmtCNY(sumMP));
   const tpEl = document.getElementById('statTP'); if(tpEl) tpEl.classList.toggle('neg', sumTP<0);
   const mpEl = document.getElementById('statMP'); if(mpEl) mpEl.classList.toggle('neg', sumMP<0);
+}
+
+/* ═══════════════════════════════
+   HISTORY ARCHIVE（历史归档汇总）
+═══════════════════════════════ */
+function computeTotals(){
+  let sumUSD=0,sumCNY=0,sumCost=0,sumFreight=0,sumTP=0,sumMP=0;
+  DB.records.forEach(r=>{
+    const c = calcRecord(r);
+    sumUSD+=c.usd; sumCNY+=c.cny; sumCost+=c.cost; sumFreight+=c.freight; sumTP+=c.totalProfit; sumMP+=c.myProfit;
+  });
+  return {sumUSD,sumCNY,sumCost,sumFreight,sumTP,sumMP};
+}
+function archivePeriod(){
+  if(!DB.records.length){ toast('当前没有流水记录，无法归档','err'); return; }
+  const t = computeTotals();
+  DB.history.push({
+    id: uid(),
+    archivedAt: new Date().toLocaleString('zh-CN'),
+    periodStart: DB.settings.periodStart || '',
+    periodEnd: DB.settings.periodEnd || '',
+    count: DB.records.length,
+    sumUSD: t.sumUSD, sumCNY: t.sumCNY, sumCost: t.sumCost,
+    sumFreight: t.sumFreight, sumTP: t.sumTP, sumMP: t.sumMP
+  });
+  renderHistory();
+  saveDB();
+  toast('已归档本期数据到历史汇总','ok');
+  if(confirm('是否清空当前流水明细，开始下一期统计？\n（历史汇总数据已安全保存，不受影响）')){
+    DB.records = [];
+    DB.settings.periodStart = '';
+    DB.settings.periodEnd = '';
+    renderAll();
+    saveDB();
+  }
+}
+function deleteHistoryEntry(id){
+  if(!confirm('确定删除这条历史归档记录？此操作不可撤销。')) return;
+  DB.history = DB.history.filter(h=>h.id!==id);
+  renderHistory();
+  saveDB();
+  toast('已删除该条历史记录','info');
+}
+function renderHistory(){
+  const tbody = document.getElementById('histTbody');
+  if(!tbody) return;
+  if(!DB.history || !DB.history.length){
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-row">暂无归档记录，统计完一期后点击「归档本期」即可存入</td></tr>`;
+  } else {
+    tbody.innerHTML = DB.history.map(h=>{
+      const period = (h.periodStart||h.periodEnd) ? `${h.periodStart||'—'} 至 ${h.periodEnd||'—'}` : '—';
+      return `<tr>
+        <td style="font-size:11px;color:var(--text-dim)">${escH(h.archivedAt)}</td>
+        <td>${escH(period)}</td>
+        <td class="center">${h.count}</td>
+        <td class="amount-cell">${fmtUSDv(h.sumUSD)}</td>
+        <td class="amount-cell">${fmtCNY(h.sumCNY)}</td>
+        <td class="amount-cell ${h.sumTP<0?'neg':''}">${fmtCNY(h.sumTP)}</td>
+        <td class="amount-cell gold-strong ${h.sumMP<0?'neg':''}">${fmtCNY(h.sumMP)}</td>
+        <td><button class="btn-icon" onclick="deleteHistoryEntry('${h.id}')" title="删除">✕</button></td>
+      </tr>`;
+    }).join('');
+  }
+  let cUSD=0,cCNY=0,cTP=0,cMP=0;
+  (DB.history||[]).forEach(h=>{ cUSD+=h.sumUSD; cCNY+=h.sumCNY; cTP+=h.sumTP; cMP+=h.sumMP; });
+  setText('histCount', (DB.history||[]).length);
+  setText('histUSD', fmtUSDv(cUSD));
+  setText('histCNY', fmtCNY(cCNY));
+  setText('histTP', fmtCNY(cTP));
+  setText('histMP', fmtCNY(cMP));
 }
 
 /* ═══════════════════════════════
