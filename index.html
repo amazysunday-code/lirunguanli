@@ -297,6 +297,7 @@ label{font-size:10px;color:var(--text-dim);font-weight:500;letter-spacing:.05em;
     <div class="panel-title">历史归档汇总 <span class="panel-sub">— 点击「归档本期」把当前合计存入历史，跨期自动累计</span></div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" onclick="archivePeriod()">📦 归档本期</button>
+      <button class="btn btn-ghost btn-sm" onclick="generateHistoryPDF()">⬇ 下载汇总 PDF</button>
       <span style="font-size:11px;color:var(--text-dim)">归档不会自动清空当前流水，归档后会询问你是否要开始下一期。</span>
     </div>
     <div class="tbl-wrap">
@@ -702,6 +703,7 @@ function archivePeriod(){
   const t = computeTotals();
   DB.history.push({
     id: uid(),
+    ts: Date.now(),
     archivedAt: new Date().toLocaleString('zh-CN'),
     periodStart: DB.settings.periodStart || '',
     periodEnd: DB.settings.periodEnd || '',
@@ -727,13 +729,22 @@ function deleteHistoryEntry(id){
   saveDB();
   toast('已删除该条历史记录','info');
 }
+function sortedHistory(){
+  return [...(DB.history||[])].sort((a,b)=>{
+    const ad = a.periodStart || '0000-00-00';
+    const bd = b.periodStart || '0000-00-00';
+    if(ad !== bd) return ad.localeCompare(bd);
+    return (a.ts||0) - (b.ts||0);
+  });
+}
 function renderHistory(){
   const tbody = document.getElementById('histTbody');
   if(!tbody) return;
-  if(!DB.history || !DB.history.length){
+  const list = sortedHistory();
+  if(!list.length){
     tbody.innerHTML = `<tr><td colspan="8" class="empty-row">暂无归档记录，统计完一期后点击「归档本期」即可存入</td></tr>`;
   } else {
-    tbody.innerHTML = DB.history.map(h=>{
+    tbody.innerHTML = list.map(h=>{
       const period = (h.periodStart||h.periodEnd) ? `${h.periodStart||'—'} 至 ${h.periodEnd||'—'}` : '—';
       return `<tr>
         <td style="font-size:11px;color:var(--text-dim)">${escH(h.archivedAt)}</td>
@@ -1053,6 +1064,145 @@ function generateProfitPDF(){
     const fname = `利润统计报表_${DB.settings.periodStart||'起'}_${DB.settings.periodEnd||'止'}.pdf`;
     doc.save(fname);
     toast('利润统计报表 PDF 已生成下载！', 'ok');
+  }).catch(err => {
+    console.error(err);
+    toast('PDF 生成失败，请重试', 'err');
+  });
+}
+
+/* ═══════════════════════════════
+   HISTORY SUMMARY PDF（历史归档汇总PDF）
+═══════════════════════════════ */
+function generateHistoryPDF(){
+  if(!DB.history || !DB.history.length){ toast('暂无归档记录，请先点击「归档本期」存入至少一期数据', 'err'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  const ml = 14;
+  const O = PDF_CLR;
+
+  const list = sortedHistory(); // 按统计期间由早到近排列
+
+  let sumUSD=0,sumCNY=0,sumTP=0,sumMP=0,sumCount=0;
+  const rows = list.map(h=>{
+    sumUSD+=h.sumUSD; sumCNY+=h.sumCNY; sumTP+=h.sumTP; sumMP+=h.sumMP; sumCount+=h.count;
+    const period = (h.periodStart||h.periodEnd) ? `${h.periodStart||'—'} 至 ${h.periodEnd||'—'}` : '—';
+    return [h.archivedAt||'', period, h.count, h.sumUSD.toFixed(2), h.sumCNY.toFixed(2), h.sumTP.toFixed(2), h.sumMP.toFixed(2)];
+  });
+
+  let container = document.getElementById('pdfRenderBox');
+  if(!container){
+    container = document.createElement('div');
+    container.id = 'pdfRenderBox';
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;width:1120px;background:#fff;color:#1a1a1a;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;z-index:-1;padding:20px 28px';
+    document.body.appendChild(container);
+  }
+
+  let tblHtml = `<table style="width:100%;border-collapse:collapse;font-size:11px;font-family:inherit;margin-top:10px">
+    <thead><tr style="background:rgb(${O.navy.join(',')});color:#fff">
+      <th style="padding:6px 4px;text-align:left">归档时间</th>
+      <th style="padding:6px 4px;text-align:left">统计期间</th>
+      <th style="padding:6px 4px;text-align:center">笔数</th>
+      <th style="padding:6px 4px;text-align:right">总收款 (USD)</th>
+      <th style="padding:6px 4px;text-align:right">折人民币 (CNY)</th>
+      <th style="padding:6px 4px;text-align:right">总利润 (CNY)</th>
+      <th style="padding:6px 4px;text-align:right">我的利润 (CNY)</th>
+    </tr></thead><tbody>`;
+  rows.forEach(r=>{
+    tblHtml += `<tr style="border-bottom:1px solid #ddd">
+      <td style="padding:5px 4px">${escH(r[0])}</td>
+      <td style="padding:5px 4px">${escH(r[1])}</td>
+      <td style="padding:5px 4px;text-align:center">${r[2]}</td>
+      <td style="padding:5px 4px;text-align:right">${r[3]}</td>
+      <td style="padding:5px 4px;text-align:right">${r[4]}</td>
+      <td style="padding:5px 4px;text-align:right">${r[5]}</td>
+      <td style="padding:5px 4px;text-align:right;font-weight:700">${r[6]}</td>
+    </tr>`;
+  });
+  tblHtml += `<tr style="background:rgb(${O.navy.join(',')});color:#fff;font-weight:700">
+    <td colspan="2" style="padding:6px 4px">合计 TOTAL（共 ${list.length} 期）</td>
+    <td style="padding:6px 4px;text-align:center">${sumCount}</td>
+    <td style="padding:6px 4px;text-align:right">${sumUSD.toFixed(2)}</td>
+    <td style="padding:6px 4px;text-align:right">${sumCNY.toFixed(2)}</td>
+    <td style="padding:6px 4px;text-align:right">${sumTP.toFixed(2)}</td>
+    <td style="padding:6px 4px;text-align:right;color:#fff">${sumMP.toFixed(2)}</td>
+  </tr></tbody></table>`;
+
+  const titleTxt = '居间利润历史归档汇总表';
+  const amtTxt = `¥ ${sumMP.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const firstP = list[0], lastP = list[list.length-1];
+  const rangeTxt = `${firstP.periodStart || firstP.archivedAt || '—'}　至　${lastP.periodEnd || lastP.archivedAt || '—'}`;
+  const summaryLine = `归档期数：${list.length} | 累计笔数：${sumCount} | 累计总收款：USD ${sumUSD.toFixed(2)} | 累计折人民币：¥${sumCNY.toFixed(2)} | 累计总利润：¥${sumTP.toFixed(2)}`;
+
+  container.innerHTML = `
+    <div style="background:rgb(${O.navy.join(',')});color:#fff;text-align:center;padding:14px 0;border-radius:4px;font-size:20px;font-weight:700;letter-spacing:1px">${titleTxt}</div>
+
+    <div style="margin-top:12px;border:1px solid #ccc;border-radius:4px;font-size:11px">
+      <div style="background:rgb(${O.grayHeader.join(',')});padding:4px 8px;font-weight:700;font-size:10px">业务方信息</div>
+      <div style="padding:8px;line-height:1.8">
+        <div>A公司（收款方）：${escH(DB.settings.companyA||'—')}</div>
+        <div>居间方（我方）：${escH(DB.settings.companyB||'—')}</div>
+        <div>覆盖时间跨度：${escH(rangeTxt)}（按统计期间由早到近排列）</div>
+      </div>
+    </div>
+
+    <hr style="border:1px solid rgb(${O.navy.join(',')});margin:12px 0">
+
+    ${tblHtml}
+
+    <div style="background:rgb(${O.navy.join(',')});color:#fff;border-radius:4px;padding:8px 12px;margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:11px;font-weight:700">历史归档累计我的利润（居间分成）</span>
+      <span style="font-size:18px;font-weight:700;color:#fff">${amtTxt}</span>
+    </div>
+
+    <div style="font-size:10px;color:#666;margin-top:8px">${summaryLine}</div>
+
+    <div style="font-size:9px;color:#999;text-align:center;margin-top:14px;border-top:1px solid #ddd;padding-top:6px">PROFIT STATEMENT — HISTORY SUMMARY</div>
+  `;
+
+  html2canvas(container, {
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: '#ffffff',
+    windowWidth: 1120
+  }).then(canvas => {
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const imgW = pw - 2*ml;
+    const imgH = (canvas.height / canvas.width) * imgW;
+    let remainingH = imgH;
+    let yOffset = 0;
+    let pageNum = 1;
+
+    while(remainingH > 0){
+      if(pageNum > 1) doc.addPage();
+      const pageH = ph - 24;
+      const srcH = Math.min(pageH * (imgW / pw), remainingH);
+
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      const srcCanvasH = Math.ceil(srcH * (canvas.width / imgW));
+      pageCanvas.height = srcCanvasH;
+      const ctx = pageCanvas.getContext('2d');
+      ctx.drawImage(canvas, 0, yOffset * (canvas.width / imgW), canvas.width, srcCanvasH, 0, 0, canvas.width, srcCanvasH);
+
+      const pageImgData = pageCanvas.toDataURL('image/jpeg', 0.95);
+      doc.addImage(pageImgData, 'JPEG', ml, 12, imgW, srcH);
+
+      doc.setFontSize(7); doc.setTextColor(150,150,150);
+      doc.text('PROFIT STATEMENT - HISTORY', ml, ph-8);
+      doc.text(`Page ${pageNum}`, pw-ml, ph-8, { align:'right' });
+
+      yOffset += srcH;
+      remainingH -= srcH;
+      pageNum++;
+    }
+
+    const fname = `历史归档汇总_${firstP.periodStart||'起'}_${lastP.periodEnd||'止'}.pdf`;
+    doc.save(fname);
+    toast('历史归档汇总 PDF 已生成下载！', 'ok');
   }).catch(err => {
     console.error(err);
     toast('PDF 生成失败，请重试', 'err');
